@@ -13,9 +13,11 @@ import os
 import signal
 import matplotlib.patheffects as path_effects
 from matplotlib.backend_bases import NavigationToolbar2
+import socket
+import select
 
 cfg = {
-    "file": "LM399.csv",
+    "file": "LTZ1000CH.csv",
     "realtime": False,
     "axis": [
         "Voltage",
@@ -27,9 +29,18 @@ cfg = {
         {"type": "VISA", "port": "GPIB0::22::INSTR", "init_seq": ["END ALWAYS"], "cmd": " ", "field": "Voltage", "color": "#f4b775", "axis": 0, "ppm": True},
         {"type": "VISA", "port": "GPIB0::17::INSTR", "init_seq": ["DISP ON"], "cmd": "READ?", "field": "34420A Voltage", "color": "#5ca949", "axis": 1, "ppm": True},
         {"type": "VISA", "port": "TCPIP0::192.168.9.194::hislip0::INSTR", "init_seq": [], "cmd": "READ?", "field": "34470A Voltage", "color": "#4789bd", "axis": 2, "ppm": True},
-        {"type": "JOY65", "port": "COM3", "field": "Temperature", "color": "gray", "axis": 3, "ppm": False, "raw": "joy65.log"}
+        {"type": "JOY65_TCPIP", "port": "127.0.0.1:7777", "field": "Temperature", "field_temp": {"type": "JOY65_TEMP", "field": "Temperature_JOY65", "axis": 3, "color": "gray", "ppm": False}, "color": "gray", "axis": 3, "ppm": False, "raw": "joy65.log"}
     ]
 }
+
+def handle_exception(exc_type, exc_value, exc_traceback):
+    # if issubclass(exc_type, KeyboardInterrupt):
+    print("%d: %s %s" % (os.getpid(), str(exc_value), str(exc_traceback)))
+    os.kill(os.getpid(), signal.SIGTERM)
+    sys.exit(0)
+        # return
+
+sys.excepthook = handle_exception
 
 
 class CollectThread(threading.Thread):
@@ -48,9 +59,7 @@ class CollectThread(threading.Thread):
                 self.values = []
                 self.failed_list = []
                 for i in range(0,len(self.devices)):
-                    if self.devices[i]["cfg"]["type"] == "JOY65":
-                        value = None
-                    elif self.devices[i]["cfg"]["type"] == "VISA":
+                    if self.devices[i]["cfg"]["type"] == "VISA":
                         try:
                             if self.devices[i]["dev"] is None:
                                 self.devices[i]["dev"] = rm.open_resource(self.devices[i]["cfg"]["port"])
@@ -66,7 +75,7 @@ class CollectThread(threading.Thread):
 
                 if not ignoreAllData:
                     for i in range(0,len(self.devices)):
-                        if self.devices[i]["cfg"]["type"] == "JOY65":
+                        if self.devices[i]["cfg"]["type"] == "JOY65" or self.devices[i]["cfg"]["type"] == "JOY65_TCPIP" or self.devices[i]["cfg"]["type"] == "JOY65_TEMP":
                             value = None
                         elif self.devices[i]["cfg"]["type"] == "VISA":
                             try:
@@ -104,37 +113,39 @@ for dev_cfg in cfg["devices"]:
         ser = serial.Serial(dev_cfg["port"], baudrate=9600, bytesize=serial.EIGHTBITS, stopbits=serial.STOPBITS_ONE, rtscts=False, timeout=3)
         print("Send Command")
         ser.write(b"DISP ON\n")
-        devices.append({ "dev": ser, "cfg": dev_cfg, "value":"0", "buf": "", "data": [], "ppm": [], "raw": fraw })      
+        devices.append({ "dev": ser, "cfg": dev_cfg, "value":"0", "buf": "", "data": [], "ppm": [], "raw": fraw, "temperature":"0" })
+    elif dev_cfg["type"] == "JOY65_TCPIP":
+        devices.append({ "dev": None, "cfg": dev_cfg, "value":"0", "buf": "", "data": [], "ppm": [], "raw": fraw, "temperature":"0" })
+        if "field_temp" in dev_cfg:
+            dev_cfg["field_temp"]["type"] = "JOY65_TEMP"
+            devices.append({ "dev": len(devices)-1, "cfg": dev_cfg["field_temp"], "value":"0", "data": [], "ppm": [], "raw": None, "temperature":"0" })
     elif dev_cfg["type"] == "VISA":
         devices.append({ "dev": None, "cfg": dev_cfg, "data": [], "ppm": [], "raw": fraw })
 
 print("Initalize Chart using backend: %s" % (matplotlib.get_backend()))
 
-def handle_exception(exc_type, exc_value, exc_traceback):
-    # if issubclass(exc_type, KeyboardInterrupt):
-    print("%d: KeyboardInterrupt" % (os.getpid()))
-    os.kill(os.getpid(), signal.SIGTERM)
-    sys.exit(0)
-        # return
-
-sys.excepthook = handle_exception
-
 plt.ion() ## Note this correction
 home = NavigationToolbar2.home
 
 default_xlim = None
+default_ylim = None
 save_xlim = None
+save_ylim = None
+
 def new_home(self, *args, **kwargs):
     global save_xlim, default_xlim
     print('Zoom Out')
     host.set_xlim(default_xlim)
+    host.set_ylim(default_ylim)
     save_xlim = None
+    save_ylim = None
     # home(self, *args, **kwargs)
 NavigationToolbar2.home = new_home
 
-plt.show(False)
+# plt.show(False)
 
 fig = plt.figure("Full Graphic")
+# fig.set_title('Click on legend line to toggle line on/off')
 host = fig.add_subplot(2,1,1)
 fig.subplots_adjust(left=0.07, right=1-(0.05* len(cfg["axis"])))
 nhost = fig.add_subplot(2,1,2)
@@ -225,7 +236,7 @@ def line_hover(event):
         wstr = " %s\n" % (p1_ts[int(event.xdata)])
         for axis in axises:
             for line in axis.get_lines():
-                wstr += " %s: %.06f\n" % (axis.get_ylabel(), line.get_ydata()[int(event.xdata)])
+                wstr += " %s: %.06f\n" % (line.get_label(), line.get_ydata()[int(event.xdata)])
         graph.axvline(x=event.xdata, color="red")
         text = graph.text(x=event.xdata, y=0, s=wstr, ha='left', va='bottom', color="red")
 
@@ -237,26 +248,26 @@ def line_hover(event):
         ppm_graph.axvline(x=event.xdata, color="red")
         ppm_graph.text(x=event.xdata, y=0.0, s=ppm_wstr, ha='left', va='bottom', color="red")
 
-    hasSelected = False
-    for axis in axises:
-        # if event.inaxes == axis:
-        for line in axis.get_lines():
-            if line.contains(event)[0]:
-                line.set_linewidth(3)
-                line.set_alpha(1)
-                hasSelected = True
-                # axis.text(3,5, 'unicode: Institut für Festkörperphysik')
-            else:
-                line.set_linewidth(1.5)
+    # hasSelected = False
+    # for axis in axises:
+    #   # if event.inaxes == axis:
+    #   for line in axis.get_lines():
+    #       if line.contains(event)[0]:
+    #           line.set_linewidth(3)
+    #           line.set_alpha(1)
+    #           hasSelected = True
+    #           # axis.text(3,5, 'unicode: Institut für Festkörperphysik')
+    #       else:
+    #           line.set_linewidth(1.5)
 
-        if hasSelected:
-            for line in axis.get_lines():
-                if not line.contains(event)[0]:
-                    line.set_alpha(0.3)
-        else:
-            for line in axis.get_lines():
-                line.set_linewidth(1.5)
-                line.set_alpha(1)
+    #   if hasSelected:
+    #       for line in axis.get_lines():
+    #           if not line.contains(event)[0]:
+    #               line.set_alpha(0.3)
+    #   else:
+    #       for line in axis.get_lines():
+    #           line.set_linewidth(1.5)
+    #           line.set_alpha(1)
 
     event.canvas.draw_idle()
     # print(event, event.xdata, event.ydata)
@@ -272,18 +283,20 @@ def fig_leave(event):
     enable_chart_update = True
 
 fig.canvas.mpl_connect('motion_notify_event', line_hover)
-fig.canvas.mpl_connect('figure_enter_event', fig_enter)
-fig.canvas.mpl_connect('figure_leave_event', fig_leave)
+# fig.canvas.mpl_connect('figure_enter_event', fig_enter)
+# fig.canvas.mpl_connect('figure_leave_event', fig_leave)
 
 # Declare and register callbacks
 def on_xlims_change(axes):
-    global default_xlim, save_xlim
+    global default_xlim, default_ylim, save_xlim, save_ylim
     if default_xlim is None:
         default_xlim = host.get_xlim()
+        default_ylim = host.get_ylim()
     
-    if enable_chart_update == False:
+    # if enable_chart_update == False:
+    else:
         save_xlim = axes.get_xlim()
-        print("updated xlims: ", axes.get_xlim())
+        save_ylim = axes.get_ylim()
 
 print("Collection started")
 while True:
@@ -293,14 +306,29 @@ while True:
 
     ignoreAllData = False
     for i in range(0,len(devices)):
-        if devices[i]["cfg"]["type"] == "JOY65":
-            while devices[i]["dev"].in_waiting:
-                rcv_data = devices[i]["dev"].read(devices[i]["dev"].in_waiting)
-                devices[i]["buf"] += rcv_data.decode("utf-8")
-                if devices[i]["raw"] is not None:
-                    devices[i]["raw"].write(rcv_data)
-            
-            sp = devices[i]["buf"].split("\r\n")
+        if devices[i]["cfg"]["type"] == "JOY65" or devices[i]["cfg"]["type"] == "JOY65_TCPIP":
+            if devices[i]["cfg"]["type"] == "JOY65":
+                while devices[i]["dev"].in_waiting:
+                    rcv_data = devices[i]["dev"].read(devices[i]["dev"].in_waiting)
+                    devices[i]["buf"] += rcv_data.decode("utf-8")
+                    if devices[i]["raw"] is not None:
+                        devices[i]["raw"].write(rcv_data)
+            elif devices[i]["cfg"]["type"] == "JOY65_TCPIP":
+                if devices[i]["dev"] is None:
+                    devices[i]["dev"] = socket.socket()
+                    tg_host = devices[i]["cfg"]["port"].split(":")
+                    devices[i]["dev"].connect((tg_host[0], int(tg_host[1])))
+                    devices[i]["dev"].setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    devices[i]["dev"].send(b"DISP ON\n")
+
+                sel = select.select([devices[i]["dev"]], [], [],0)
+                if len(sel) > 0:                    
+                    rcv_data = devices[i]["dev"].recv(1024)
+                    devices[i]["buf"] += rcv_data.decode("utf-8")
+                    if devices[i]["raw"] is not None:
+                        devices[i]["raw"].write(rcv_data)
+
+            sp = devices[i]["buf"].split("\n")
             if sp[-1] != "":
                 devices[i]["buf"] = sp[-1]
 
@@ -308,6 +336,7 @@ while True:
                 try:
                     joy65_data = sp[-2].split(",")
                     devices[i]["value"] = joy65_data[1]
+                    devices[i]["temperature"] = joy65_data[6]
                 except Exception as e:
                     print(joy65_data)
                     continue
@@ -318,6 +347,7 @@ while True:
 
     if enable_chart_update:
         default_xlim = None
+        default_ylim = None
         for axis in axises:
             axis.clear()
         
@@ -339,7 +369,13 @@ while True:
             print("ERROR: DEVICE %d VALUE UNMATCHED" % (i))
 
         if enable_chart_update:
-            pd, = axises[axis_index].plot(p1_x, devices[i]["data"], devices[i]["cfg"]["color"], picker=5)
+            pd, = axises[axis_index].plot(p1_x, devices[i]["data"], devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"])
+            # if i == 1:
+            #   d = np.array(devices[i]["data"])
+            #   pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*25*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
+            # if i == 2:
+            #   d = np.array(devices[i]["data"])
+            #   pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*5*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
             axises[axis_index].yaxis.label.set_color(pd.get_color())
             axises[axis_index].yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
 
@@ -358,15 +394,18 @@ while True:
         for i in range(0,len(devices)):
             if devices[i]["cfg"]["ppm"]:
                 if enable_chart_update:
-                    p5, = nhost.plot(p1_x[20:], devices[i]["ppm"], devices[i]["cfg"]["color"], label="离散系数")
+                    p5, = nhost.plot(p1_x[20:], devices[i]["ppm"], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
                 if cfg["realtime"] and len(devices[i]["ppm"])>0:
-                    rt_nhost.plot(p1_x[-len(devices[i]["ppm"][-300:]):], devices[i]["ppm"][-300:], devices[i]["cfg"]["color"], label="离散系数")
+                    rt_nhost.plot(p1_x[-len(devices[i]["ppm"][-300:]):], devices[i]["ppm"][-300:], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
 
     if enable_chart_update and save_xlim is not None:
+        leg = host.legend(loc='upper left', fancybox=True, shadow=True)
+        axises[1].legend(loc='upper left', fancybox=True, shadow=True)
         host.set_xlim(save_xlim)
+        host.set_ylim(save_ylim)
 
-    # fig.canvas.draw()
-    plt.pause(0.01)
+    fig.canvas.draw_idle()
+    fig.canvas.start_event_loop(0.05)
 
     write_str = "%d,%s"%(n,datetime.datetime.now())
     value_str = ""
@@ -374,7 +413,9 @@ while True:
     insert_data = []
 
     while t_read.is_waiting:
-        plt.pause(0.05)
+        # plt.pause(0.05)
+        fig.canvas.start_event_loop(0.05)
+        # time.sleep(0.05)
 
     for i in t_read.failed_list:
         print("Connect to VISA Devices %d Failed" % (i))
@@ -386,10 +427,15 @@ while True:
         continue
 
     for i in range(0,len(devices)):
-        if devices[i]["cfg"]["type"] == "JOY65":
+        if devices[i]["cfg"]["type"] == "JOY65" or devices[i]["cfg"]["type"] == "JOY65_TCPIP":
             value = devices[i]["value"]
             if devices[i]["value"] == "0":
                 print("JOY65 Data Invalid")
+                ignoreAllData = True
+        elif devices[i]["cfg"]["type"] == "JOY65_TEMP":
+            value = devices[devices[i]["dev"]]["temperature"]
+            if value == "0":
+                print("JOY65 Temperature Data Invalid")
                 ignoreAllData = True
         elif devices[i]["cfg"]["type"] == "VISA":
             value = t_read.values[i]
