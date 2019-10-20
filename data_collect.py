@@ -240,11 +240,11 @@ def line_hover(event):
         graph.axvline(x=event.xdata, color="red")
         text = graph.text(x=event.xdata, y=0, s=wstr, ha='left', va='bottom', color="red")
 
-    if event.inaxes is not None and event.inaxes.get_position().bounds == nhost.get_position().bounds and int(event.xdata) < len(p1_x)-20 and event.xdata >= 0:
+    if event.inaxes is not None and event.inaxes.get_position().bounds == nhost.get_position().bounds and int(event.xdata) < len(p1_x) and event.xdata >= 20:
         ppm_wstr = " %s\n" % (p1_ts[int(event.xdata)])
         for i in range(0,len(devices)):
             if devices[i]["cfg"]["ppm"]:
-                ppm_wstr += " %s: %.06f\n" % (devices[i]["cfg"]["field"], devices[i]["ppm"][int(event.xdata)])
+                ppm_wstr += " %s: %.06f\n" % (devices[i]["cfg"]["field"], devices[i]["ppm"][int(event.xdata)-20])
         ppm_graph.axvline(x=event.xdata, color="red")
         ppm_graph.text(x=event.xdata, y=0.0, s=ppm_wstr, ha='left', va='bottom', color="red")
 
