@@ -450,6 +450,7 @@ while True:
         lined = dict()
         for legline, origline in zip(leg.get_lines(), lns):
             legline.set_picker(5)
+            legline.set_linewidth(5)
             lined[legline] = origline
             if line_visible[line_index[origline]] == False:
                 origline.set_visible(False)
@@ -470,7 +471,7 @@ while True:
                         legline.set_alpha(1.0)
                     else:
                         legline.set_alpha(0.2)
-                    
+
                     fig.canvas.draw_idle()
 
         leg.figure.canvas.mpl_connect('button_press_event', on_btn_place)
