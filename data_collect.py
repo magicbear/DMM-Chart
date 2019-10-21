@@ -15,6 +15,7 @@ import matplotlib.patheffects as path_effects
 from matplotlib.backend_bases import NavigationToolbar2
 import socket
 import select
+import matplotlib.ticker as ticker
 
 cfg = {
     "file": "LTZ1000CH.csv",
@@ -63,6 +64,7 @@ class CollectThread(threading.Thread):
                         try:
                             if self.devices[i]["dev"] is None:
                                 self.devices[i]["dev"] = rm.open_resource(self.devices[i]["cfg"]["port"])
+                                self.devices[i]["dev"].timeout = 8000
                                 for seq in self.devices[i]["cfg"]["init_seq"]:
                                     self.devices[i]["dev"].write(seq)
 
@@ -146,9 +148,9 @@ NavigationToolbar2.home = new_home
 
 fig = plt.figure("Full Graphic")
 # fig.set_title('Click on legend line to toggle line on/off')
-host = fig.add_subplot(2,1,1)
+host = fig.add_subplot(2,1,1,picker=True)
 fig.subplots_adjust(left=0.07, right=1-(0.05* len(cfg["axis"])))
-nhost = fig.add_subplot(2,1,2)
+nhost = fig.add_subplot(2,1,2,picker=True)
 
 if cfg["realtime"]:
     rt_fig = plt.figure("Realtime")
@@ -159,11 +161,16 @@ if cfg["realtime"]:
 
 # fig.canvas.manager.window.attributes('-topmost', 0)
 
-if matplotlib.get_backend() == "TkAgg":
-    wm = plt.get_current_fig_manager() 
-    wm.window.attributes('-topmost', 0)
+# if matplotlib.get_backend() == "TkAgg":
+#   wm = plt.get_current_fig_manager() 
+#   wm.window.attributes('-topmost', 0)
 
 axises.append(host)
+
+graph = host.twinx()
+ppm_graph = nhost.twinx()
+graph.axes.get_yaxis().set_visible(False)
+ppm_graph.axes.get_yaxis().set_visible(False)
 
 for i in range(0,len(cfg["axis"])):
     if i == 0:
@@ -171,11 +178,6 @@ for i in range(0,len(cfg["axis"])):
     axises.append(host.twinx())
     if cfg["realtime"]:
         rt_axises.append(rt_host.twinx())
-
-graph = host.twinx()
-ppm_graph = nhost.twinx()
-graph.axes.get_yaxis().set_visible(False)
-ppm_graph.axes.get_yaxis().set_visible(False)
 
 p1_x = []
 p1_ts = []
@@ -224,6 +226,23 @@ t_read = CollectThread(devices)
 t_read.start()
 
 enable_chart_update = True
+
+# Declare and register callbacks
+def on_xlims_change(axes):
+    global default_xlim, default_ylim, save_xlim, save_ylim
+    if default_xlim is None:
+        default_xlim = host.get_xlim()
+        default_ylim = host.get_ylim()
+    
+    # if enable_chart_update == False:
+    else:
+        save_xlim = axes.get_xlim()
+        save_ylim = axes.get_ylim()
+
+def format_date(x, pos=None):
+    if x < 0 or x > len(p1_ts):
+        return x
+    return p1_ts[int(x)]
 
 def line_hover(event):
     # if host is event.inaxes:
@@ -282,21 +301,44 @@ def fig_leave(event):
     print("Fig Leave")
     enable_chart_update = True
 
+# def on_pick(event):
+#   print("Pick event", event.artist)
+#   legline = event.artist
+
+# class Workaround(object):
+#   def __init__(self, artists):
+#       self.artists = artists
+#       artists[0].figure.canvas.mpl_connect('pick_event', self)
+
+#   def __call__(self, event):
+#       try:
+#           if event.mouseevent.in_picking >= 3:
+#               return
+#           elif event.mouseevent.in_picking < 3:
+#               pass
+#       except Exception as e:
+#           event.mouseevent.in_picking = 0
+#           pass
+#       print("  Picking ",event)
+#       for artist in self.artists:
+#           try:
+#               event.mouseevent.in_picking += 1
+#               artist.pick(event.mouseevent)
+#           except Exception as e:
+#               print("  Picking "+str(e)+" Failed")
+
+
+# for axis in axises:
+#   axis.figure.canvas.mpl_connect('pick_event', on_pick)
+
+# fig.canvas.mpl_connect('pick_event', on_pick)
 fig.canvas.mpl_connect('motion_notify_event', line_hover)
 # fig.canvas.mpl_connect('figure_enter_event', fig_enter)
 # fig.canvas.mpl_connect('figure_leave_event', fig_leave)
+# Workaround(axises)
 
-# Declare and register callbacks
-def on_xlims_change(axes):
-    global default_xlim, default_ylim, save_xlim, save_ylim
-    if default_xlim is None:
-        default_xlim = host.get_xlim()
-        default_ylim = host.get_ylim()
-    
-    # if enable_chart_update == False:
-    else:
-        save_xlim = axes.get_xlim()
-        save_ylim = axes.get_ylim()
+line_index = dict()
+line_visible = [True] * len(devices)
 
 print("Collection started")
 while True:
@@ -344,6 +386,7 @@ while True:
     if cfg["realtime"]:
         for axis in rt_axises:
             axis.clear()
+    lns = []
 
     if enable_chart_update:
         default_xlim = None
@@ -352,6 +395,7 @@ while True:
             axis.clear()
         
         host.callbacks.connect('xlim_changed', on_xlims_change)
+        host.xaxis.set_major_formatter(ticker.FuncFormatter(format_date))
 
     for i in range(0,len(cfg["axis"])):
         if enable_chart_update:
@@ -369,7 +413,9 @@ while True:
             print("ERROR: DEVICE %d VALUE UNMATCHED" % (i))
 
         if enable_chart_update:
-            pd, = axises[axis_index].plot(p1_x, devices[i]["data"], devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"])
+            pd, = axises[axis_index].plot(p1_x, devices[i]["data"], devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], picker=5)
+            lns.append(pd)
+            line_index[pd] = i
             # if i == 1:
             #   d = np.array(devices[i]["data"])
             #   pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*25*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
@@ -380,27 +426,55 @@ while True:
             axises[axis_index].yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
 
         if cfg["realtime"]:
-            pd, = rt_axises[axis_index].plot(p1_x[-300:], devices[i]["data"][-300:], devices[i]["cfg"]["color"])
+            pd, = rt_axises[axis_index].plot(p1_x[-300:], devices[i]["data"][-300:], devices[i]["cfg"]["color"], picker=5)
             rt_axises[axis_index].yaxis.label.set_color(pd.get_color())
             rt_axises[axis_index].yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
 
-        if enable_chart_update:
-            nhost.clear()
-            nhost.set_ylabel("Std(ppm)")
-        if cfg["realtime"]:
-            rt_nhost.clear()
-            rt_nhost.set_ylabel("Std(ppm)")
+    if enable_chart_update:
+        nhost.clear()
+        nhost.set_ylabel("Std(ppm)")
+    if cfg["realtime"]:
+        rt_nhost.clear()
+        rt_nhost.set_ylabel("Std(ppm)")
 
-        for i in range(0,len(devices)):
-            if devices[i]["cfg"]["ppm"]:
-                if enable_chart_update:
-                    p5, = nhost.plot(p1_x[20:], devices[i]["ppm"], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
-                if cfg["realtime"] and len(devices[i]["ppm"])>0:
-                    rt_nhost.plot(p1_x[-len(devices[i]["ppm"][-300:]):], devices[i]["ppm"][-300:], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
+    for i in range(0,len(devices)):
+        if devices[i]["cfg"]["ppm"]:
+            if enable_chart_update:
+                p5, = nhost.plot(p1_x[20:], devices[i]["ppm"], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
+            if cfg["realtime"] and len(devices[i]["ppm"])>0:
+                rt_nhost.plot(p1_x[-len(devices[i]["ppm"][-300:]):], devices[i]["ppm"][-300:], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
+
+    if enable_chart_update:
+        labs = [l.get_label() for l in lns]
+        leg = fig.legend(lns, labs, loc='lower right', fancybox=True, shadow=True)
+        lined = dict()
+        for legline, origline in zip(leg.get_lines(), lns):
+            legline.set_picker(5)
+            lined[legline] = origline
+            if line_visible[line_index[origline]] == False:
+                origline.set_visible(False)
+                legline.set_alpha(0.2)
+
+        # leg.set_zorder(axises[len(axises)-1].get_zorder() + 1)
+        def on_btn_place(event):
+            for legline in leg.get_lines():
+                c = legline.contains(event)
+                if c[0]:
+                    origline = lined[legline]
+                    vis = not origline.get_visible()
+                    origline.set_visible(vis)
+                    line_visible[line_index[origline]] = vis
+                    # Change the alpha on the line in the legend so we can see what lines
+                    # have been toggled
+                    if vis:
+                        legline.set_alpha(1.0)
+                    else:
+                        legline.set_alpha(0.2)
+
+        leg.figure.canvas.mpl_connect('button_press_event', on_btn_place)
+        # leg.draggable()
 
     if enable_chart_update and save_xlim is not None:
-        leg = host.legend(loc='upper left', fancybox=True, shadow=True)
-        axises[1].legend(loc='upper left', fancybox=True, shadow=True)
         host.set_xlim(save_xlim)
         host.set_ylim(save_ylim)
 
@@ -453,7 +527,7 @@ while True:
     else:
         p1_x.append(n)
         ts = datetime.datetime.now()
-        p1_ts.append("%d:%d:%d"%(ts.hour,ts.minute,ts.second))
+        p1_ts.append("%02d:%02d:%02d"%(ts.hour,ts.minute,ts.second))
 
         for i in range(0,len(devices)):
             devices[i]["data"].append(insert_data[i])
@@ -464,7 +538,4 @@ while True:
     print("%d   Value: %s"%(n,value_str[:-1]))
     f.write((write_str + "\n").encode("utf-8"))
     f.flush()
-    # time.sleep(300)
     n+= 1
-
-# =STDEV.P(C2:C102)/AVERAGE(C2:C102)*1000000
