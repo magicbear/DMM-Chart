@@ -470,6 +470,8 @@ while True:
                         legline.set_alpha(1.0)
                     else:
                         legline.set_alpha(0.2)
+                    
+                    fig.canvas.draw_idle()
 
         leg.figure.canvas.mpl_connect('button_press_event', on_btn_place)
         # leg.draggable()
