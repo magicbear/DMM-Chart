@@ -18,9 +18,9 @@ import select
 import matplotlib.ticker as ticker
 import traceback
 
+#
 cfg = {
     "file": "LTZ1000CH.csv",
-    "realtime": False,
     "axis": [
         "Voltage",
         "34420A Voltage",
@@ -30,7 +30,8 @@ cfg = {
     "devices": [
         {"type": "VISA", "port": "GPIB0::22::INSTR", "init_seq": ["END ALWAYS","DISP OFF,\"\""], "cmd": " ", "field": "Voltage", "color": "#f4b775", "axis": 0, "ppm": True},
         {"type": "VISA", "port": "GPIB0::17::INSTR", "init_seq": ["DISP OFF"], "cmd": "READ?", "field": "34420A Voltage", "color": "#5ca949", "axis": 1, "ppm": True},
-        {"type": "VISA", "port": "TCPIP0::192.168.9.194::hislip0::INSTR", "init_seq": [], "cmd": "READ?", "field": "34470A Voltage", "tcal_channel": 3, "tcal": (25.341, 27.792, 10.0000112, 10.0000232), "color": "#4789bd", "axis": 2, "ppm": True},
+        # {"type": "VISA", "port": "TCPIP0::192.168.9.194::hislip0::INSTR", "init_seq": [], "cmd": "READ?", "field": "34470A Voltage" , "tcal": (25.341, 27.792, 10.0000112, 10.0000232), "tcal_channel": 3, "color": "#4789bd", "axis": 2, "ppm": True},
+        {"type": "VISA", "port": "TCPIP0::192.168.9.194::hislip0::INSTR", "init_seq": [], "cmd": "READ?", "field": "34470A Voltage" , "color": "#4789bd", "axis": 2, "ppm": True},
         {"type": "JOY65_TCPIP", "port": "127.0.0.1:7777", "field": "Temperature", "field_temp": {"type": "JOY65_TEMP", "field": "Temperature_JOY65", "axis": 3, "color": "gray", "ppm": False}, "color": "gray", "axis": 3, "ppm": False, "raw": "joy65.log"}
     ]
 }
@@ -135,18 +136,17 @@ print("Initalize Chart using backend: %s" % (matplotlib.get_backend()))
 plt.ion() ## Note this correction
 home = NavigationToolbar2.home
 
-default_xlim = None
-default_ylim = None
-save_xlim = None
-save_ylim = None
-
 def new_home(self, *args, **kwargs):
-    global save_xlim, default_xlim
     print('Zoom Out')
-    host.set_xlim(default_xlim)
-    host.set_ylim(default_ylim)
-    save_xlim = None
-    save_ylim = None
+    # host.set_xlim(None)
+    # host.set_ylim(None)
+    for axis in axises:
+        axis.relim()
+        axis.autoscale()
+
+    nhost.relim()
+    nhost.autoscale()
+    fig.canvas.draw_idle()
     # home(self, *args, **kwargs)
 NavigationToolbar2.home = new_home
 
@@ -157,13 +157,6 @@ fig = plt.figure("Full Graphic")
 host = fig.add_subplot(2,1,1,picker=True)
 fig.subplots_adjust(left=0.07, right=1-(0.05* len(cfg["axis"])))
 nhost = fig.add_subplot(2,1,2,picker=True)
-
-if cfg["realtime"]:
-    rt_fig = plt.figure("Realtime")
-    rt_host = rt_fig.add_subplot(2,1,1)
-    rt_fig.subplots_adjust(left=0.07, right=1-(0.05* len(cfg["axis"])))
-    rt_nhost = rt_fig.add_subplot(2,1,2)
-    rt_axises.append(rt_host)
 
 # fig.canvas.manager.window.attributes('-topmost', 0)
 
@@ -182,8 +175,6 @@ for i in range(0,len(cfg["axis"])):
     if i == 0:
         continue
     axises.append(host.twinx())
-    if cfg["realtime"]:
-        rt_axises.append(rt_host.twinx())
 
 p1_x = []
 p1_ts = []
@@ -234,18 +225,6 @@ t_read = CollectThread(devices)
 t_read.start()
 
 enable_chart_update = True
-
-# Declare and register callbacks
-def on_xlims_change(axes):
-    global default_xlim, default_ylim, save_xlim, save_ylim
-    if default_xlim is None:
-        default_xlim = host.get_xlim()
-        default_ylim = host.get_ylim()
-    
-    # if enable_chart_update == False:
-    else:
-        save_xlim = axes.get_xlim()
-        save_ylim = axes.get_ylim()
 
 def format_date(x, pos=None):
     if x < 0 or x >= len(p1_ts):
@@ -348,6 +327,87 @@ fig.canvas.mpl_connect('motion_notify_event', line_hover)
 line_index = dict()
 line_visible = [True] * len(devices) * 2
 
+
+
+host.xaxis.set_major_formatter(ticker.FuncFormatter(format_date))
+
+lns_map = dict()
+lns = []
+ppm_lns_map = dict()
+
+for i in range(0,len(cfg["axis"])):
+    if enable_chart_update:
+        axises[i].set_ylabel(cfg["axis"][i])
+        if i >= 2:
+            axises[i].spines["right"].set_position(("axes", 1 +(i-1)*0.1))
+
+for i in range(0,len(devices)):
+    axis_index = devices[i]["cfg"]["axis"]
+    if len(p1_x) != len(devices[i]["data"]):
+        print("ERROR: DEVICE %d VALUE UNMATCHED" % (i))
+
+    if enable_chart_update:
+        pd, = axises[axis_index].plot(p1_x, devices[i]["data"], devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], picker=5)
+        lns.append(pd)
+        lns_map[pd] = (i, 0)
+        line_index[pd] = len(lns) - 1
+        if "tcal" in devices[i]["cfg"]:
+            d = np.array(devices[i]["data"])                    
+            pd, = axises[axis_index].plot(p1_x, tcal_map(d,np.array(devices[devices[i]["cfg"]["tcal_channel"]]["data"]), devices[i]["cfg"]["tcal"][0], devices[i]["cfg"]["tcal"][1], devices[i]["cfg"]["tcal"][2], devices[i]["cfg"]["tcal"][3]), devices[i]["cfg"]["color"], label="%s TCAL" % (devices[i]["cfg"]["field"]), alpha=0.5, linewidth=0.75)
+            lns.append(pd)
+            lns_map[pd] = (i, 1)
+            line_index[pd] = len(lns) - 1
+        # if i == 2:
+        #   d = np.array(devices[i]["data"])
+        #   pd, = axises[axis_index].plot(p1_x, d + f_map(np.array(devices[3]["data"]), 26.4015, 27.581, 10.0000142, 10.0000251), devices[i]["cfg"]["color"], label="%s TCAL" % (devices[i]["cfg"]["field"]), alpha=0.5, linewidth=0.75)
+            # pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*5*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
+        axises[axis_index].yaxis.label.set_color(pd.get_color())
+        axises[axis_index].yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+
+if enable_chart_update:
+    nhost.clear()
+    nhost.set_ylabel("Std(ppm)")
+
+for i in range(0,len(devices)):
+    if devices[i]["cfg"]["ppm"]:
+        if enable_chart_update:
+            p5, = nhost.plot(p1_x[20:], devices[i]["ppm"], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
+            ppm_lns_map[p5] = i
+
+if enable_chart_update:
+    labs = [l.get_label() for l in lns]
+    leg = fig.legend(lns, labs, loc='lower right', fancybox=True, shadow=True)
+    lined = dict()
+    for legline, origline in zip(leg.get_lines(), lns):
+        legline.set_picker(5)
+        legline.set_linewidth(5)
+        lined[legline] = origline
+        if line_visible[line_index[origline]] == False:
+            origline.set_visible(False)
+            legline.set_alpha(0.2)
+
+    # leg.set_zorder(axises[len(axises)-1].get_zorder() + 1)
+    def on_btn_place(event):
+        for legline in leg.get_lines():
+            c = legline.contains(event)
+            if c[0]:
+                origline = lined[legline]
+                vis = not origline.get_visible()
+                origline.set_visible(vis)
+                line_visible[line_index[origline]] = vis
+                # Change the alpha on the line in the legend so we can see what lines
+                # have been toggled
+                if vis:
+                    legline.set_alpha(1.0)
+                else:
+                    legline.set_alpha(0.2)
+
+                fig.canvas.draw_idle()
+
+    leg.figure.canvas.mpl_connect('button_press_event', on_btn_place)
+    # leg.draggable()
+
+
 print("Collection started")
 while True:
     t_read.mutex.acquire()
@@ -374,7 +434,7 @@ while True:
                     print("OK")
 
                 sel = select.select([devices[i]["dev"]], [], [],0)
-                if len(sel) > 0:                    
+                if len(sel[0]) > 0:                 
                     rcv_data = devices[i]["dev"].recv(1024)
                     devices[i]["buf"] += rcv_data.decode("utf-8")
                     if devices[i]["raw"] is not None:
@@ -393,109 +453,116 @@ while True:
                     print(joy65_data)
                     continue
 
-    if cfg["realtime"]:
-        for axis in rt_axises:
-            axis.clear()
-    lns = []
+    # lns = []
 
     if enable_chart_update:
-        default_xlim = None
-        default_ylim = None
+        for lns_i in range(0,len(lns)):
+            i, mod = lns_map[lns[lns_i]]
+            axis_index = devices[i]["cfg"]["axis"]
+            if len(p1_x) != len(devices[i]["data"]):
+                print("ERROR: DEVICE %d VALUE UNMATCHED" % (i))
+
+            if mod == 0:
+                lns[lns_i].set_data(p1_x, devices[i]["data"])
+            elif mod == 1:          
+                d = np.array(devices[i]["data"])
+                lns[lns_i].set_data(p1_x, tcal_map(d,np.array(devices[devices[i]["cfg"]["tcal_channel"]]["data"]), devices[i]["cfg"]["tcal"][0], devices[i]["cfg"]["tcal"][1], devices[i]["cfg"]["tcal"][2], devices[i]["cfg"]["tcal"][3]))
+
+        for line, i in ppm_lns_map.items():
+            line.set_data(p1_x[20:], devices[i]["ppm"])
         for axis in axises:
-            axis.clear()
+            axis.relim()
+            axis.autoscale_view()
+        nhost.relim()
+        nhost.autoscale_view()
+
+        # if save_xlim is not None:
+        #   host.set_xlim(save_xlim)
+        #   host.set_ylim(save_ylim)
+
+
+
+    #   for axis in axises:
+    #       axis.clear()
         
-        host.callbacks.connect('xlim_changed', on_xlims_change)
-        host.xaxis.set_major_formatter(ticker.FuncFormatter(format_date))
+    #   host.callbacks.connect('xlim_changed', on_xlims_change)
+    #   host.xaxis.set_major_formatter(ticker.FuncFormatter(format_date))
 
-    for i in range(0,len(cfg["axis"])):
-        if enable_chart_update:
-            axises[i].set_ylabel(cfg["axis"][i])
-            if i >= 2:
-                axises[i].spines["right"].set_position(("axes", 1 +(i-1)*0.1))
-        if cfg["realtime"]:
-            rt_axises[i].set_ylabel(cfg["axis"][i])
-            if i >= 2:
-                rt_axises[i].spines["right"].set_position(("axes", 1 +(i-1)*0.1))
+    # for i in range(0,len(cfg["axis"])):
+    #   if enable_chart_update:
+    #       axises[i].set_ylabel(cfg["axis"][i])
+    #       if i >= 2:
+    #           axises[i].spines["right"].set_position(("axes", 1 +(i-1)*0.1))
 
-    for i in range(0,len(devices)):
-        axis_index = devices[i]["cfg"]["axis"]
-        if len(p1_x) != len(devices[i]["data"]):
-            print("ERROR: DEVICE %d VALUE UNMATCHED" % (i))
+    # for i in range(0,len(devices)):
+    #   axis_index = devices[i]["cfg"]["axis"]
+    #   if len(p1_x) != len(devices[i]["data"]):
+    #       print("ERROR: DEVICE %d VALUE UNMATCHED" % (i))
 
-        if enable_chart_update:
-            pd, = axises[axis_index].plot(p1_x, devices[i]["data"], devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], picker=5)
-            lns.append(pd)
-            line_index[pd] = len(lns) - 1
-            if "tcal" in devices[i]["cfg"]:
-                d = np.array(devices[i]["data"])                    
-                pd, = axises[axis_index].plot(p1_x, tcal_map(d,np.array(devices[devices[i]["cfg"]["tcal_channel"]]["data"]), devices[i]["cfg"]["tcal"][0], devices[i]["cfg"]["tcal"][1], devices[i]["cfg"]["tcal"][2], devices[i]["cfg"]["tcal"][3]), devices[i]["cfg"]["color"], label="%s TCAL" % (devices[i]["cfg"]["field"]), alpha=0.5, linewidth=0.75)
-                lns.append(pd)
-                line_index[pd] = len(lns) - 1
-            # if i == 2:
-            #   d = np.array(devices[i]["data"])
-            #   pd, = axises[axis_index].plot(p1_x, d + f_map(np.array(devices[3]["data"]), 26.4015, 27.581, 10.0000142, 10.0000251), devices[i]["cfg"]["color"], label="%s TCAL" % (devices[i]["cfg"]["field"]), alpha=0.5, linewidth=0.75)
-                # pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*5*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
-            axises[axis_index].yaxis.label.set_color(pd.get_color())
-            axises[axis_index].yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+    #   if enable_chart_update:
+    #       pd, = axises[axis_index].plot(p1_x, devices[i]["data"], devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], picker=5)
+    #       lns.append(pd)
+    #       line_index[pd] = len(lns) - 1
+    #       if "tcal" in devices[i]["cfg"]:
+    #           d = np.array(devices[i]["data"])                    
+    #           pd, = axises[axis_index].plot(p1_x, tcal_map(d,np.array(devices[devices[i]["cfg"]["tcal_channel"]]["data"]), devices[i]["cfg"]["tcal"][0], devices[i]["cfg"]["tcal"][1], devices[i]["cfg"]["tcal"][2], devices[i]["cfg"]["tcal"][3]), devices[i]["cfg"]["color"], label="%s TCAL" % (devices[i]["cfg"]["field"]), alpha=0.5, linewidth=0.75)
+    #           lns.append(pd)
+    #           line_index[pd] = len(lns) - 1
+    #       # if i == 2:
+    #       #   d = np.array(devices[i]["data"])
+    #       #   pd, = axises[axis_index].plot(p1_x, d + f_map(np.array(devices[3]["data"]), 26.4015, 27.581, 10.0000142, 10.0000251), devices[i]["cfg"]["color"], label="%s TCAL" % (devices[i]["cfg"]["field"]), alpha=0.5, linewidth=0.75)
+    #           # pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*5*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
+    #       axises[axis_index].yaxis.label.set_color(pd.get_color())
+    #       axises[axis_index].yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
 
-        if cfg["realtime"]:
-            pd, = rt_axises[axis_index].plot(p1_x[-300:], devices[i]["data"][-300:], devices[i]["cfg"]["color"], picker=5)
-            rt_axises[axis_index].yaxis.label.set_color(pd.get_color())
-            rt_axises[axis_index].yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+    # if enable_chart_update:
+    #   nhost.clear()
+    #   nhost.set_ylabel("Std(ppm)")
 
-    if enable_chart_update:
-        nhost.clear()
-        nhost.set_ylabel("Std(ppm)")
-    if cfg["realtime"]:
-        rt_nhost.clear()
-        rt_nhost.set_ylabel("Std(ppm)")
+    # for i in range(0,len(devices)):
+    #   if devices[i]["cfg"]["ppm"]:
+    #       if enable_chart_update:
+    #           p5, = nhost.plot(p1_x[20:], devices[i]["ppm"], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
 
-    for i in range(0,len(devices)):
-        if devices[i]["cfg"]["ppm"]:
-            if enable_chart_update:
-                p5, = nhost.plot(p1_x[20:], devices[i]["ppm"], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
-            if cfg["realtime"] and len(devices[i]["ppm"])>0:
-                rt_nhost.plot(p1_x[-len(devices[i]["ppm"][-300:]):], devices[i]["ppm"][-300:], devices[i]["cfg"]["color"], label="%s离散系数" % (devices[i]["cfg"]["field"]))
+    # if enable_chart_update:
+    #   labs = [l.get_label() for l in lns]
+    #   leg = fig.legend(lns, labs, loc='lower right', fancybox=True, shadow=True)
+    #   lined = dict()
+    #   for legline, origline in zip(leg.get_lines(), lns):
+    #       legline.set_picker(5)
+    #       legline.set_linewidth(5)
+    #       lined[legline] = origline
+    #       if line_visible[line_index[origline]] == False:
+    #           origline.set_visible(False)
+    #           legline.set_alpha(0.2)
 
-    if enable_chart_update:
-        labs = [l.get_label() for l in lns]
-        leg = fig.legend(lns, labs, loc='lower right', fancybox=True, shadow=True)
-        lined = dict()
-        for legline, origline in zip(leg.get_lines(), lns):
-            legline.set_picker(5)
-            legline.set_linewidth(5)
-            lined[legline] = origline
-            if line_visible[line_index[origline]] == False:
-                origline.set_visible(False)
-                legline.set_alpha(0.2)
+    #   # leg.set_zorder(axises[len(axises)-1].get_zorder() + 1)
+    #   def on_btn_place(event):
+    #       for legline in leg.get_lines():
+    #           c = legline.contains(event)
+    #           if c[0]:
+    #               origline = lined[legline]
+    #               vis = not origline.get_visible()
+    #               origline.set_visible(vis)
+    #               line_visible[line_index[origline]] = vis
+    #               # Change the alpha on the line in the legend so we can see what lines
+    #               # have been toggled
+    #               if vis:
+    #                   legline.set_alpha(1.0)
+    #               else:
+    #                   legline.set_alpha(0.2)
 
-        # leg.set_zorder(axises[len(axises)-1].get_zorder() + 1)
-        def on_btn_place(event):
-            for legline in leg.get_lines():
-                c = legline.contains(event)
-                if c[0]:
-                    origline = lined[legline]
-                    vis = not origline.get_visible()
-                    origline.set_visible(vis)
-                    line_visible[line_index[origline]] = vis
-                    # Change the alpha on the line in the legend so we can see what lines
-                    # have been toggled
-                    if vis:
-                        legline.set_alpha(1.0)
-                    else:
-                        legline.set_alpha(0.2)
+    #               fig.canvas.draw_idle()
 
-                    fig.canvas.draw_idle()
+    #   leg.figure.canvas.mpl_connect('button_press_event', on_btn_place)
+    #   # leg.draggable()
 
-        leg.figure.canvas.mpl_connect('button_press_event', on_btn_place)
-        # leg.draggable()
-
-    if enable_chart_update and save_xlim is not None:
-        host.set_xlim(save_xlim)
-        host.set_ylim(save_ylim)
+    # if enable_chart_update and save_xlim is not None:
+    #   host.set_xlim(save_xlim)
+    #   host.set_ylim(save_ylim)
 
     fig.canvas.draw_idle()
-    fig.canvas.start_event_loop(0.05)
+    fig.canvas.start_event_loop(0.02)
 
     write_str = "%d,%s"%(n,datetime.datetime.now())
     value_str = ""
@@ -504,7 +571,7 @@ while True:
 
     while t_read.is_waiting:
         # plt.pause(0.05)
-        fig.canvas.start_event_loop(0.05)
+        fig.canvas.start_event_loop(0.02)
         # time.sleep(0.05)
 
     for i in t_read.failed_list:
