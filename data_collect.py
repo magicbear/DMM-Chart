@@ -16,6 +16,7 @@ from matplotlib.backend_bases import NavigationToolbar2
 import socket
 import select
 import matplotlib.ticker as ticker
+import traceback
 
 cfg = {
     "file": "LTZ1000CH.csv",
@@ -27,22 +28,26 @@ cfg = {
         "Temperature"
     ],
     "devices": [
-        {"type": "VISA", "port": "GPIB0::22::INSTR", "init_seq": ["END ALWAYS"], "cmd": " ", "field": "Voltage", "color": "#f4b775", "axis": 0, "ppm": True},
-        {"type": "VISA", "port": "GPIB0::17::INSTR", "init_seq": ["DISP ON"], "cmd": "READ?", "field": "34420A Voltage", "color": "#5ca949", "axis": 1, "ppm": True},
-        {"type": "VISA", "port": "TCPIP0::192.168.9.194::hislip0::INSTR", "init_seq": [], "cmd": "READ?", "field": "34470A Voltage", "color": "#4789bd", "axis": 2, "ppm": True},
+        {"type": "VISA", "port": "GPIB0::22::INSTR", "init_seq": ["END ALWAYS","DISP OFF,\"\""], "cmd": " ", "field": "Voltage", "color": "#f4b775", "axis": 0, "ppm": True},
+        {"type": "VISA", "port": "GPIB0::17::INSTR", "init_seq": ["DISP OFF"], "cmd": "READ?", "field": "34420A Voltage", "color": "#5ca949", "axis": 1, "ppm": True},
+        {"type": "VISA", "port": "TCPIP0::192.168.9.194::hislip0::INSTR", "init_seq": [], "cmd": "READ?", "field": "34470A Voltage", "tcal_channel": 3, "tcal": (25.341, 27.792, 10.0000112, 10.0000232), "color": "#4789bd", "axis": 2, "ppm": True},
         {"type": "JOY65_TCPIP", "port": "127.0.0.1:7777", "field": "Temperature", "field_temp": {"type": "JOY65_TEMP", "field": "Temperature_JOY65", "axis": 3, "color": "gray", "ppm": False}, "color": "gray", "axis": 3, "ppm": False, "raw": "joy65.log"}
     ]
 }
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     # if issubclass(exc_type, KeyboardInterrupt):
-    print("%d: %s %s" % (os.getpid(), str(exc_value), str(exc_traceback)))
+    # print("%d: %s %s" % (os.getpid(), str(exc_value), str(''.join(traceback.format_tb(exc_traceback)))))
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
     os.kill(os.getpid(), signal.SIGTERM)
     sys.exit(0)
         # return
 
 sys.excepthook = handle_exception
 
+def tcal_map(d, x, in_min, in_max, out_min, out_max):
+    return d * (((x - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min) / out_min
+    # return d + ((x - in_min) * (out_max - out_min) / (in_max - in_min))
 
 class CollectThread(threading.Thread):
     def __init__(self, devices):
@@ -65,15 +70,16 @@ class CollectThread(threading.Thread):
                             if self.devices[i]["dev"] is None:
                                 self.devices[i]["dev"] = rm.open_resource(self.devices[i]["cfg"]["port"])
                                 self.devices[i]["dev"].timeout = 8000
-                                for seq in self.devices[i]["cfg"]["init_seq"]:
-                                    self.devices[i]["dev"].write(seq)
+                                if "already_init" not in self.devices[i] or self.devices[i]["cfg"]["port"][0:4] != "GPIB":
+                                    for seq in self.devices[i]["cfg"]["init_seq"]:
+                                        self.devices[i]["dev"].write(seq)
+                                    self.devices[i]["already_init"] = True
 
                             self.devices[i]["dev"].write(self.devices[i]["cfg"]["cmd"])
                         except Exception as e:
                             print("Connect to VISA Devices %d Failed: %s" % (i, str(e)))
                             self.failed_list.append(i)
                             ignoreAllData = True
-                            break
 
                 if not ignoreAllData:
                     for i in range(0,len(self.devices)):
@@ -83,10 +89,10 @@ class CollectThread(threading.Thread):
                             try:
                                 value = self.devices[i]["dev"].read()[:-1].strip()
                             except Exception as e:
-                                print("Connect to VISA Devices %d Failed: %s" % (i, str(e)))
+                                print("Read VISA Devices %d Failed: %s" % (i, str(e)))
                                 self.failed_list.append(i)
                                 ignoreAllData = True
-                                break
+                                self.devices[i]["dev"] = None
 
                         self.values.append(value)
 
@@ -211,6 +217,8 @@ try:
 except Exception as e:
     pass
 
+# print("%.07f,%.07f,%.07f,%.07f" %(np.percentile(devices[3]["data"], 10), np.percentile(devices[3]["data"], 90), np.percentile(devices[1]["data"], 10), np.percentile(devices[1]["data"], 90)))
+
 print("Initalize Data File")
 f = open(cfg["file"], "ab+")
 
@@ -240,7 +248,7 @@ def on_xlims_change(axes):
         save_ylim = axes.get_ylim()
 
 def format_date(x, pos=None):
-    if x < 0 or x > len(p1_ts):
+    if x < 0 or x >= len(p1_ts):
         return x
     return p1_ts[int(x)]
 
@@ -338,7 +346,7 @@ fig.canvas.mpl_connect('motion_notify_event', line_hover)
 # Workaround(axises)
 
 line_index = dict()
-line_visible = [True] * len(devices)
+line_visible = [True] * len(devices) * 2
 
 print("Collection started")
 while True:
@@ -357,11 +365,13 @@ while True:
                         devices[i]["raw"].write(rcv_data)
             elif devices[i]["cfg"]["type"] == "JOY65_TCPIP":
                 if devices[i]["dev"] is None:
+                    print("Connecting to JOY65 TCPIP...", end="")
                     devices[i]["dev"] = socket.socket()
                     tg_host = devices[i]["cfg"]["port"].split(":")
                     devices[i]["dev"].connect((tg_host[0], int(tg_host[1])))
                     devices[i]["dev"].setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     devices[i]["dev"].send(b"DISP ON\n")
+                    print("OK")
 
                 sel = select.select([devices[i]["dev"]], [], [],0)
                 if len(sel) > 0:                    
@@ -415,13 +425,16 @@ while True:
         if enable_chart_update:
             pd, = axises[axis_index].plot(p1_x, devices[i]["data"], devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], picker=5)
             lns.append(pd)
-            line_index[pd] = i
-            # if i == 1:
-            #   d = np.array(devices[i]["data"])
-            #   pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*25*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
+            line_index[pd] = len(lns) - 1
+            if "tcal" in devices[i]["cfg"]:
+                d = np.array(devices[i]["data"])                    
+                pd, = axises[axis_index].plot(p1_x, tcal_map(d,np.array(devices[devices[i]["cfg"]["tcal_channel"]]["data"]), devices[i]["cfg"]["tcal"][0], devices[i]["cfg"]["tcal"][1], devices[i]["cfg"]["tcal"][2], devices[i]["cfg"]["tcal"][3]), devices[i]["cfg"]["color"], label="%s TCAL" % (devices[i]["cfg"]["field"]), alpha=0.5, linewidth=0.75)
+                lns.append(pd)
+                line_index[pd] = len(lns) - 1
             # if i == 2:
             #   d = np.array(devices[i]["data"])
-            #   pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*5*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
+            #   pd, = axises[axis_index].plot(p1_x, d + f_map(np.array(devices[3]["data"]), 26.4015, 27.581, 10.0000142, 10.0000251), devices[i]["cfg"]["color"], label="%s TCAL" % (devices[i]["cfg"]["field"]), alpha=0.5, linewidth=0.75)
+                # pd, = axises[axis_index].plot(p1_x, d + (np.array(devices[3]["data"])-24)/1000000*5*d, devices[i]["cfg"]["color"], label=devices[i]["cfg"]["field"], alpha=0.5, linewidth=0.75)
             axises[axis_index].yaxis.label.set_color(pd.get_color())
             axises[axis_index].yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
 
